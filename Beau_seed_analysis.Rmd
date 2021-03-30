@@ -1,0 +1,98 @@
+---
+title: "Beau's seed analysis"
+author: "David Mason"
+date: "3/30/2021"
+output: pdf_document
+---
+
+```{r setup, include=TRUE}
+# 30 March 2021—David Mason—Feeder project seed results
+# Set-up project ####
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(car)
+library(MuMIn)
+library(agridat)
+library(DHARMa)
+library(RVAideMemoire)
+
+
+seeds <- read.csv("Seeds.csv")
+
+head(seeds) # view data set
+hist(seeds$seednum) ## view histogram of raw data
+
+# Basic model fitting and diagnostics ####
+mod <- glm(seednum~Treatment, data=seeds, family=poisson)
+
+plot(mod)
+hist(mod$residuals)
+plot(mod$residuals~mod$fitted.values)  ## residuals should be evenly dispersed around 0 across the range of x's
+abline(h=0) 
+qqPlot(mod$residuals)
+boxplot(mod$residuals ~ seeds$Treatment)  ## variances should be homogeneous for each group
+
+## diagnose model fit with DHARMa package
+sim_mod <- simulateResiduals(fittedModel = mod, n = 250)
+plot(sim_mod) # absolutely not
+
+plotQQunif(sim_mod)
+plotResiduals(sim_mod)
+
+## test for overdispersion (ie. more variance in the data than expected)
+testDispersion(sim_mod)
+
+## test for zero-inflation (ie. more zeros in the data than expected)
+testZeroInflation(sim_mod)
+
+# Nested model fitting and diagnostics ####
+nestedmodel <- glmer(seednum~Treatment+(1|Plot), data=seeds, family=poisson)
+summary(nestedmodel)
+
+## diagnose model fit with DHARMa package
+sim_nested <- simulateResiduals(fittedModel = nestedmodel, n = 250)
+plot(sim_nested) # looks good
+
+## check for overdispersion using RVAideMemoire package
+overdisp.glmer(nestedmodel) # overdispersion ratio calculator 
+
+# desired ratio ~1, our model's ratio is ~32
+# Nested model correcting for overdispersion ####
+
+## correct for overdispersion using observation-level random effect
+seeds$obs <- 1:length(seeds$seednum)
+
+nestedmodel2 <- glmer(seednum~Treatment+(1|Plot)+(1|obs), data=seeds, family=poisson)
+summary(nestedmodel2)
+
+## diagnose model fit with DHARMa package
+sim_nestedmodel2 <- simulateResiduals(fittedModel = nestedmodel2, n = 250)
+plot(sim_nestedmodel2) # looks good
+
+## additional tests
+testUniformity(sim_nestedmodel2)
+testDispersion(sim_nestedmodel2)
+testZeroInflation(sim_nestedmodel2)
+
+# Assess models ####
+## compare all three models using likelihood ratio test (or AIC)
+anova(nestedmodel2, nestedmodel, mod)
+
+## Look at p-values and means
+Anova(nestedmodel2)
+emmeans(nestedmodel2, pairwise~Treatment, type="response")
+
+## compare above means to regular lm. Means from GLM look too low
+emmeans(lm(seednum~Treatment, data=seeds), ~Treatment, type="response")
+
+## emmeans, correcting for bias (only needed for GLMMs) by calculating the total SD of the random effect variance components
+totSD <- VarCorr(nestedmodel2) %>% 
+				 as.data.frame() %>% 
+				 summarize(totSD=sum(vcov)) %>% 
+	       mutate(totSD=sqrt(totSD))
+
+emmeans(nestedmodel2, pairwise~Treatment, type="response", bias.adj=T, sigma=totSD$totSD)
+
+```
